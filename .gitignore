@@ -1,0 +1,4 @@
+venv/*
+leads.db/
+.idea/*
+__pycache__
