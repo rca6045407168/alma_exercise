@@ -1,4 +1,5 @@
-# main.py
+# main.py (Refactored)
+
 from fastapi import FastAPI, HTTPException, Depends, Form, UploadFile, File
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,6 +10,8 @@ import shutil
 import secrets
 import os
 import sqlite3
+import mimetypes
+import logging
 
 from db.sql_lite import DB
 from model.lead_model import Lead
@@ -24,9 +27,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Basic auth config
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Authentication config
 security = HTTPBasic()
-USERS = {"attorney": "password123"}
+USERS = {"attorney": "password123"}  # NOTE: Replace with hashed passwords and env vars in production
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
@@ -34,13 +41,23 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 _db = DB()
 _db.init_db()
 
-# Auth helper
+# --- Helper functions ---
 def get_current_username(credentials: HTTPBasicCredentials = Depends(security)):
     correct_password = USERS.get(credentials.username)
     if not correct_password or not secrets.compare_digest(credentials.password, correct_password):
+        logger.warning(f"Failed auth attempt for username: {credentials.username}")
         raise HTTPException(status_code=401, detail="Unauthorized")
     return credentials.username
 
+def send_email_notification(email: str):
+    # Simulate sending email, or replace with actual email service like SendGrid
+    logger.info(f"Email sent to {email} and attorney@company.com")
+
+def is_valid_resume(file: UploadFile):
+    allowed_types = ["application/pdf", "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"]
+    return file.content_type in allowed_types
+
+# --- API Endpoints ---
 @app.post("/lead")
 def create_lead(
         first_name: str = Form(...),
@@ -48,19 +65,28 @@ def create_lead(
         email: EmailStr = Form(...),
         resume: UploadFile = File(...)
 ):
+    if not is_valid_resume(resume):
+        raise HTTPException(status_code=400, detail="Invalid file type. Only PDF or Word documents allowed.")
+
     file_location = os.path.join(UPLOAD_DIR, resume.filename)
     with open(file_location, "wb") as buffer:
         shutil.copyfileobj(resume.file, buffer)
 
     with sqlite3.connect(_db.DATABASE) as conn:
         cursor = conn.cursor()
+
+        # Check for duplicate email
+        existing = cursor.execute("SELECT * FROM leads WHERE email = ?", (email,)).fetchone()
+        if existing:
+            raise HTTPException(status_code=400, detail="A lead with this email already exists.")
+
         cursor.execute(
             '''INSERT INTO leads (first_name, last_name, email, resume) VALUES (?, ?, ?, ?)''',
             (first_name, last_name, email, file_location)
         )
         conn.commit()
 
-    print(f"Email sent to {email} and attorney@company.com")
+    send_email_notification(email)
     return {"message": "Lead submitted successfully"}
 
 @app.get("/leads", response_model=List[Lead])
